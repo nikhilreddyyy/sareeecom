@@ -3,6 +3,7 @@ const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const Coupon = require('../models/Coupon');
 const { AppError } = require('../middleware/errorHandler');
+const { getDb, increment, arrayUnion } = require('../config/firebase');
 
 const TAX_RATE = 0.05;
 const FREE_SHIPPING_THRESHOLD = 1000;
@@ -13,25 +14,38 @@ const SHIPPING_COST = 99;
 exports.createOrder = async (req, res, next) => {
   try {
     const { shippingAddress, paymentMethod } = req.body;
-    const cart = await Cart.findOne({ user: req.user._id }).populate('items.product').populate('coupon');
-    if (!cart || cart.items.length === 0) return next(new AppError('Cart is empty', 400));
+    const cart = await Cart.findByUser(req.user.id);
+    if (!cart || !cart.items || cart.items.length === 0) {
+      return next(new AppError('Cart is empty', 400));
+    }
 
-    // Validate stock
-    for (const item of cart.items) {
-      if (!item.product || item.product.stock < item.quantity) {
-        return next(new AppError(`Insufficient stock for ${item.product?.name || 'item'}`, 400));
+    // Fetch products and validate stock
+    const itemsWithProducts = await Promise.all(
+      cart.items.map(async (item) => {
+        const product = await Product.findById(item.product);
+        return { ...item, productDoc: product };
+      })
+    );
+
+    for (const item of itemsWithProducts) {
+      if (!item.productDoc || item.productDoc.stock < item.quantity) {
+        return next(new AppError(`Insufficient stock for ${item.productDoc?.name || 'item'}`, 400));
       }
     }
 
     const subtotal = cart.items.reduce((t, i) => t + i.price * i.quantity, 0);
     let discount = 0;
+    let couponDoc = null;
+
     if (cart.coupon) {
-      const coupon = cart.coupon;
-      if (coupon.discountType === 'percentage') {
-        discount = (subtotal * coupon.discountValue) / 100;
-        if (coupon.maxDiscountAmount) discount = Math.min(discount, coupon.maxDiscountAmount);
-      } else {
-        discount = coupon.discountValue;
+      couponDoc = await Coupon.findById(cart.coupon);
+      if (couponDoc) {
+        if (couponDoc.discountType === 'percentage') {
+          discount = (subtotal * couponDoc.discountValue) / 100;
+          if (couponDoc.maxDiscountAmount) discount = Math.min(discount, couponDoc.maxDiscountAmount);
+        } else {
+          discount = couponDoc.discountValue;
+        }
       }
     }
 
@@ -41,43 +55,46 @@ exports.createOrder = async (req, res, next) => {
     const totalPrice = afterDiscount + taxPrice + shippingPrice;
 
     const order = await Order.create({
-      user: req.user._id,
-      items: cart.items.map(i => ({
-        product: i.product._id,
-        name: i.product.name,
-        image: i.product.images[0]?.url || '',
+      user: req.user.id,
+      items: itemsWithProducts.map((i) => ({
+        product: i.product,
+        name: i.productDoc.name,
+        image: i.productDoc.images?.[0]?.url || '',
         price: i.price,
         quantity: i.quantity,
-        size: i.size,
-        color: i.color,
+        size: i.size || '',
+        color: i.color || '',
       })),
       shippingAddress,
       paymentMethod,
       itemsPrice: subtotal,
       discountAmount: discount,
-      coupon: cart.coupon?._id,
+      coupon: cart.coupon || null,
       taxPrice,
       shippingPrice,
       totalPrice,
     });
 
     // Decrement stock
-    for (const item of cart.items) {
-      await Product.findByIdAndUpdate(item.product._id, {
-        $inc: { stock: -item.quantity, soldCount: item.quantity },
+    for (const item of itemsWithProducts) {
+      const db = getDb();
+      await db.collection('products').doc(item.product).update({
+        stock: increment(-item.quantity),
+        soldCount: increment(item.quantity),
       });
     }
 
     // Update coupon usage
-    if (cart.coupon) {
-      await Coupon.findByIdAndUpdate(cart.coupon._id, {
-        $inc: { usedCount: 1 },
-        $push: { usedBy: req.user._id },
+    if (couponDoc) {
+      const db = getDb();
+      await db.collection('coupons').doc(cart.coupon).update({
+        usedCount: increment(1),
+        usedBy: arrayUnion(req.user.id),
       });
     }
 
     // Clear cart
-    await Cart.findOneAndUpdate({ user: req.user._id }, { items: [], coupon: null });
+    await Cart.update(cart.id, { items: [], coupon: null });
 
     res.status(201).json({ success: true, order });
   } catch (error) {
@@ -90,11 +107,8 @@ exports.createOrder = async (req, res, next) => {
 exports.getMyOrders = async (req, res, next) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = 10;
-    const skip = (page - 1) * limit;
-    const total = await Order.countDocuments({ user: req.user._id });
-    const orders = await Order.find({ user: req.user._id }).sort('-createdAt').skip(skip).limit(limit);
-    res.json({ success: true, total, page, pages: Math.ceil(total / limit), orders });
+    const result = await Order.getByUser(req.user.id, { page });
+    res.json({ success: true, ...result });
   } catch (error) {
     next(error);
   }
@@ -104,9 +118,9 @@ exports.getMyOrders = async (req, res, next) => {
 // @route   GET /api/orders/:id
 exports.getOrder = async (req, res, next) => {
   try {
-    const order = await Order.findById(req.params.id).populate('user', 'name email');
+    const order = await Order.findById(req.params.id);
     if (!order) return next(new AppError('Order not found', 404));
-    if (order.user._id.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+    if (order.user !== req.user.id && req.user.role !== 'admin') {
       return next(new AppError('Not authorized', 403));
     }
     res.json({ success: true, order });
@@ -121,13 +135,18 @@ exports.updateOrderToPaid = async (req, res, next) => {
   try {
     const order = await Order.findById(req.params.id);
     if (!order) return next(new AppError('Order not found', 404));
-    order.isPaid = true;
-    order.paidAt = Date.now();
-    order.paymentResult = req.body.paymentResult;
-    order.orderStatus = 'confirmed';
-    order.statusHistory.push({ status: 'confirmed', note: 'Payment received' });
-    await order.save();
-    res.json({ success: true, order });
+    const statusHistory = [
+      ...(order.statusHistory || []),
+      { status: 'confirmed', timestamp: new Date().toISOString(), note: 'Payment received' },
+    ];
+    const updated = await Order.update(req.params.id, {
+      isPaid: true,
+      paidAt: new Date().toISOString(),
+      paymentResult: req.body.paymentResult || null,
+      orderStatus: 'confirmed',
+      statusHistory,
+    });
+    res.json({ success: true, order: updated });
   } catch (error) {
     next(error);
   }
@@ -138,13 +157,8 @@ exports.updateOrderToPaid = async (req, res, next) => {
 exports.adminGetOrders = async (req, res, next) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = 20;
-    const skip = (page - 1) * limit;
-    const filter = {};
-    if (req.query.status) filter.orderStatus = req.query.status;
-    const total = await Order.countDocuments(filter);
-    const orders = await Order.find(filter).populate('user', 'name email').sort('-createdAt').skip(skip).limit(limit);
-    res.json({ success: true, total, page, pages: Math.ceil(total / limit), orders });
+    const result = await Order.getAll({ page, status: req.query.status || '' });
+    res.json({ success: true, ...result });
   } catch (error) {
     next(error);
   }
@@ -157,12 +171,17 @@ exports.updateOrderStatus = async (req, res, next) => {
     const { status, note, trackingNumber } = req.body;
     const order = await Order.findById(req.params.id);
     if (!order) return next(new AppError('Order not found', 404));
-    order.orderStatus = status;
-    if (trackingNumber) order.trackingNumber = trackingNumber;
-    if (status === 'delivered') order.deliveredAt = Date.now();
-    order.statusHistory.push({ status, note });
-    await order.save();
-    res.json({ success: true, order });
+
+    const statusHistory = [
+      ...(order.statusHistory || []),
+      { status, timestamp: new Date().toISOString(), note: note || '' },
+    ];
+    const updateData = { orderStatus: status, statusHistory };
+    if (trackingNumber) updateData.trackingNumber = trackingNumber;
+    if (status === 'delivered') updateData.deliveredAt = new Date().toISOString();
+
+    const updated = await Order.update(req.params.id, updateData);
+    res.json({ success: true, order: updated });
   } catch (error) {
     next(error);
   }
@@ -172,48 +191,8 @@ exports.updateOrderStatus = async (req, res, next) => {
 // @route   GET /api/admin/analytics
 exports.getAnalytics = async (req, res, next) => {
   try {
-    const totalOrders = await Order.countDocuments();
-    const totalRevenue = await Order.aggregate([
-      { $match: { isPaid: true } },
-      { $group: { _id: null, total: { $sum: '$totalPrice' } } },
-    ]);
-    const ordersByStatus = await Order.aggregate([
-      { $group: { _id: '$orderStatus', count: { $sum: 1 } } },
-    ]);
-
-    // Monthly revenue (last 6 months)
-    const sixMonthsAgo = new Date();
-    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-    const monthlyRevenue = await Order.aggregate([
-      { $match: { isPaid: true, createdAt: { $gte: sixMonthsAgo } } },
-      {
-        $group: {
-          _id: { year: { $year: '$createdAt' }, month: { $month: '$createdAt' } },
-          revenue: { $sum: '$totalPrice' },
-          orders: { $sum: 1 },
-        },
-      },
-      { $sort: { '_id.year': 1, '_id.month': 1 } },
-    ]);
-
-    // Top products
-    const topProducts = await Order.aggregate([
-      { $unwind: '$items' },
-      { $group: { _id: '$items.product', name: { $first: '$items.name' }, totalSold: { $sum: '$items.quantity' }, revenue: { $sum: { $multiply: ['$items.price', '$items.quantity'] } } } },
-      { $sort: { totalSold: -1 } },
-      { $limit: 10 },
-    ]);
-
-    res.json({
-      success: true,
-      analytics: {
-        totalOrders,
-        totalRevenue: totalRevenue[0]?.total || 0,
-        ordersByStatus,
-        monthlyRevenue,
-        topProducts,
-      },
-    });
+    const analytics = await Order.getAnalytics();
+    res.json({ success: true, analytics });
   } catch (error) {
     next(error);
   }

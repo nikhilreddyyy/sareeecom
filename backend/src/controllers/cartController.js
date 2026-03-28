@@ -2,8 +2,9 @@ const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const Coupon = require('../models/Coupon');
 const { AppError } = require('../middleware/errorHandler');
+const { v4: uuidv4 } = require('uuid');
 
-const TAX_RATE = 0.05; // 5% GST
+const TAX_RATE = 0.05;
 const FREE_SHIPPING_THRESHOLD = 1000;
 const SHIPPING_COST = 99;
 
@@ -11,9 +12,11 @@ const SHIPPING_COST = 99;
 // @route   GET /api/cart
 exports.getCart = async (req, res, next) => {
   try {
-    let cart = await Cart.findOne({ user: req.user._id }).populate('items.product').populate('coupon');
-    if (!cart) cart = await Cart.create({ user: req.user._id, items: [] });
-    res.json({ success: true, cart, ...calculateCart(cart) });
+    let cart = await Cart.findByUser(req.user.id);
+    if (!cart) cart = await Cart.createForUser(req.user.id);
+    let couponDoc = null;
+    if (cart.coupon) couponDoc = await Coupon.findById(cart.coupon);
+    res.json({ success: true, cart, ...calculateCart(cart.items, couponDoc) });
   } catch (error) {
     next(error);
   }
@@ -28,22 +31,31 @@ exports.addToCart = async (req, res, next) => {
     if (!product || !product.isActive) return next(new AppError('Product not found', 404));
     if (product.stock < quantity) return next(new AppError('Insufficient stock', 400));
 
-    let cart = await Cart.findOne({ user: req.user._id });
-    if (!cart) cart = await Cart.create({ user: req.user._id, items: [] });
+    let cart = await Cart.findByUser(req.user.id);
+    if (!cart) cart = await Cart.createForUser(req.user.id);
 
-    const existing = cart.items.find(
-      i => i.product.toString() === productId && i.size === size && i.color === color
+    let items = [...(cart.items || [])];
+    const existing = items.find(
+      (i) => i.product === productId && i.size === size && i.color === color
     );
 
     if (existing) {
       existing.quantity += quantity;
     } else {
-      cart.items.push({ product: productId, quantity, size, color, price: product.discountedPrice || product.price });
+      items.push({
+        id: uuidv4(),
+        product: productId,
+        quantity,
+        size: size || '',
+        color: color || '',
+        price: product.discountedPrice || product.price,
+        productName: product.name,
+        productImage: product.images?.[0]?.url || '',
+      });
     }
 
-    await cart.save();
-    await cart.populate('items.product');
-    res.json({ success: true, cart, ...calculateCart(cart) });
+    cart = await Cart.update(cart.id, { items });
+    res.json({ success: true, cart, ...calculateCart(items) });
   } catch (error) {
     next(error);
   }
@@ -54,21 +66,21 @@ exports.addToCart = async (req, res, next) => {
 exports.updateCartItem = async (req, res, next) => {
   try {
     const { quantity } = req.body;
-    const cart = await Cart.findOne({ user: req.user._id });
+    let cart = await Cart.findByUser(req.user.id);
     if (!cart) return next(new AppError('Cart not found', 404));
 
-    const item = cart.items.id(req.params.itemId);
-    if (!item) return next(new AppError('Item not found', 404));
+    let items = [...(cart.items || [])];
+    const idx = items.findIndex((i) => i.id === req.params.itemId);
+    if (idx === -1) return next(new AppError('Item not found', 404));
 
     if (quantity <= 0) {
-      cart.items = cart.items.filter(i => i._id.toString() !== req.params.itemId);
+      items.splice(idx, 1);
     } else {
-      item.quantity = quantity;
+      items[idx] = { ...items[idx], quantity };
     }
 
-    await cart.save();
-    await cart.populate('items.product');
-    res.json({ success: true, cart, ...calculateCart(cart) });
+    cart = await Cart.update(cart.id, { items });
+    res.json({ success: true, cart, ...calculateCart(items) });
   } catch (error) {
     next(error);
   }
@@ -78,12 +90,11 @@ exports.updateCartItem = async (req, res, next) => {
 // @route   DELETE /api/cart/:itemId
 exports.removeFromCart = async (req, res, next) => {
   try {
-    const cart = await Cart.findOne({ user: req.user._id });
+    let cart = await Cart.findByUser(req.user.id);
     if (!cart) return next(new AppError('Cart not found', 404));
-    cart.items = cart.items.filter(i => i._id.toString() !== req.params.itemId);
-    await cart.save();
-    await cart.populate('items.product');
-    res.json({ success: true, cart, ...calculateCart(cart) });
+    const items = (cart.items || []).filter((i) => i.id !== req.params.itemId);
+    cart = await Cart.update(cart.id, { items });
+    res.json({ success: true, cart, ...calculateCart(items) });
   } catch (error) {
     next(error);
   }
@@ -94,26 +105,27 @@ exports.removeFromCart = async (req, res, next) => {
 exports.applyCoupon = async (req, res, next) => {
   try {
     const { code } = req.body;
-    const coupon = await Coupon.findOne({ code: code.toUpperCase() });
-    if (!coupon) return next(new AppError('Invalid coupon code', 400));
+    const couponDoc = await Coupon.findByCode(code);
+    if (!couponDoc) return next(new AppError('Invalid coupon code', 400));
 
-    const validity = coupon.isValid();
+    const validity = Coupon.isValid(couponDoc);
     if (!validity.valid) return next(new AppError(validity.message, 400));
 
-    const userUsed = coupon.usedBy.filter(u => u.toString() === req.user._id.toString()).length;
-    if (userUsed >= coupon.userUsageLimit) return next(new AppError('You have already used this coupon', 400));
-
-    const cart = await Cart.findOne({ user: req.user._id }).populate('items.product');
-    if (!cart) return next(new AppError('Cart is empty', 400));
-
-    const subtotal = cart.items.reduce((t, i) => t + i.price * i.quantity, 0);
-    if (subtotal < coupon.minOrderAmount) {
-      return next(new AppError(`Minimum order amount ₹${coupon.minOrderAmount} required`, 400));
+    const userUsed = (couponDoc.usedBy || []).filter((u) => u === req.user.id).length;
+    if (userUsed >= couponDoc.userUsageLimit) {
+      return next(new AppError('You have already used this coupon', 400));
     }
 
-    cart.coupon = coupon._id;
-    await cart.save();
-    res.json({ success: true, message: 'Coupon applied!', cart, ...calculateCart(cart, coupon) });
+    let cart = await Cart.findByUser(req.user.id);
+    if (!cart || !cart.items?.length) return next(new AppError('Cart is empty', 400));
+
+    const subtotal = cart.items.reduce((t, i) => t + i.price * i.quantity, 0);
+    if (subtotal < couponDoc.minOrderAmount) {
+      return next(new AppError(`Minimum order amount ₹${couponDoc.minOrderAmount} required`, 400));
+    }
+
+    cart = await Cart.update(cart.id, { coupon: couponDoc.id });
+    res.json({ success: true, message: 'Coupon applied!', cart, ...calculateCart(cart.items, couponDoc) });
   } catch (error) {
     next(error);
   }
@@ -123,10 +135,9 @@ exports.applyCoupon = async (req, res, next) => {
 // @route   DELETE /api/cart/coupon
 exports.removeCoupon = async (req, res, next) => {
   try {
-    const cart = await Cart.findOne({ user: req.user._id });
-    if (cart) { cart.coupon = null; await cart.save(); }
-    await cart.populate('items.product');
-    res.json({ success: true, cart, ...calculateCart(cart) });
+    let cart = await Cart.findByUser(req.user.id);
+    if (cart) cart = await Cart.update(cart.id, { coupon: null });
+    res.json({ success: true, cart, ...calculateCart(cart?.items || []) });
   } catch (error) {
     next(error);
   }
@@ -136,15 +147,16 @@ exports.removeCoupon = async (req, res, next) => {
 // @route   DELETE /api/cart
 exports.clearCart = async (req, res, next) => {
   try {
-    await Cart.findOneAndUpdate({ user: req.user._id }, { items: [], coupon: null });
+    const cart = await Cart.findByUser(req.user.id);
+    if (cart) await Cart.update(cart.id, { items: [], coupon: null });
     res.json({ success: true, message: 'Cart cleared' });
   } catch (error) {
     next(error);
   }
 };
 
-function calculateCart(cart, couponDoc = null) {
-  const subtotal = cart.items.reduce((t, i) => t + i.price * i.quantity, 0);
+function calculateCart(items = [], couponDoc = null) {
+  const subtotal = items.reduce((t, i) => t + i.price * i.quantity, 0);
   let discount = 0;
 
   if (couponDoc) {

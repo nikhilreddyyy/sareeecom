@@ -1,24 +1,37 @@
-const mongoose = require('mongoose');
+const { getDb, serverTimestamp } = require('../config/firebase');
 
-const cartItemSchema = new mongoose.Schema({
-  product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
-  quantity: { type: Number, required: true, min: 1, default: 1 },
-  size: { type: String },
-  color: { type: String },
-  price: { type: Number, required: true },
-});
+const COLLECTION = 'carts';
 
-const cartSchema = new mongoose.Schema(
-  {
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
-    items: [cartItemSchema],
-    coupon: { type: mongoose.Schema.Types.ObjectId, ref: 'Coupon' },
+const CartModel = {
+  collection() {
+    return getDb().collection(COLLECTION);
   },
-  { timestamps: true }
-);
 
-cartSchema.virtual('subtotal').get(function () {
-  return this.items.reduce((total, item) => total + item.price * item.quantity, 0);
-});
+  async findByUser(userId) {
+    const snap = await this.collection().where('user', '==', userId).limit(1).get();
+    if (snap.empty) return null;
+    const doc = snap.docs[0];
+    return { id: doc.id, ...doc.data() };
+  },
 
-module.exports = mongoose.model('Cart', cartSchema);
+  async createForUser(userId) {
+    const now = serverTimestamp();
+    const cartData = { user: userId, items: [], coupon: null, createdAt: now, updatedAt: now };
+    const ref = await this.collection().add(cartData);
+    const created = await ref.get();
+    return { id: created.id, ...created.data() };
+  },
+
+  async update(id, data) {
+    const updateData = { ...data, updatedAt: serverTimestamp() };
+    await this.collection().doc(id).update(updateData);
+    const doc = await this.collection().doc(id).get();
+    return { id: doc.id, ...doc.data() };
+  },
+
+  calcSubtotal(items = []) {
+    return items.reduce((total, item) => total + item.price * item.quantity, 0);
+  },
+};
+
+module.exports = CartModel;

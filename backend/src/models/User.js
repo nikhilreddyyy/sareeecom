@@ -1,45 +1,75 @@
-const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { getDb, serverTimestamp } = require('../config/firebase');
 
-const addressSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  phone: { type: String, required: true },
-  street: { type: String, required: true },
-  city: { type: String, required: true },
-  state: { type: String, required: true },
-  pincode: { type: String, required: true },
-  country: { type: String, default: 'India' },
-  isDefault: { type: Boolean, default: false },
-});
+const COLLECTION = 'users';
 
-const userSchema = new mongoose.Schema(
-  {
-    name: { type: String, required: true, trim: true },
-    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-    password: { type: String, required: true, minlength: 6, select: false },
-    phone: { type: String, trim: true },
-    avatar: { type: String, default: '' },
-    role: { type: String, enum: ['user', 'admin'], default: 'user' },
-    isBlocked: { type: Boolean, default: false },
-    addresses: [addressSchema],
-    wishlist: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
-    resetPasswordToken: String,
-    resetPasswordExpire: Date,
+const UserModel = {
+  collection() {
+    return getDb().collection(COLLECTION);
   },
-  { timestamps: true }
-);
 
-userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
-  this.password = await bcrypt.hash(this.password, 12);
-  next();
-});
+  async findById(id) {
+    const doc = await this.collection().doc(id).get();
+    if (!doc.exists) return null;
+    return { id: doc.id, ...doc.data() };
+  },
 
-userSchema.methods.matchPassword = async function (enteredPassword) {
-  return await bcrypt.compare(enteredPassword, this.password);
+  async findByIdWithPassword(id) {
+    return this.findById(id);
+  },
+
+  async findByEmail(email) {
+    const snap = await this.collection().where('email', '==', email.toLowerCase()).limit(1).get();
+    if (snap.empty) return null;
+    const doc = snap.docs[0];
+    return { id: doc.id, ...doc.data() };
+  },
+
+  async create(data) {
+    const hashedPassword = await bcrypt.hash(data.password, 12);
+    const now = serverTimestamp();
+    const userData = {
+      name: data.name.trim(),
+      email: data.email.toLowerCase().trim(),
+      password: hashedPassword,
+      phone: data.phone || '',
+      avatar: data.avatar || '',
+      role: data.role || 'user',
+      isBlocked: false,
+      addresses: [],
+      wishlist: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    const ref = await this.collection().add(userData);
+    const created = await ref.get();
+    return { id: created.id, ...created.data() };
+  },
+
+  async update(id, data) {
+    const updateData = { ...data, updatedAt: serverTimestamp() };
+    await this.collection().doc(id).update(updateData);
+    return this.findById(id);
+  },
+
+  async matchPassword(plainPassword, hashedPassword) {
+    return bcrypt.compare(plainPassword, hashedPassword);
+  },
+
+  async getAll({ page = 1, limit = 20, search = '' } = {}) {
+    let query = this.collection().orderBy('createdAt', 'desc');
+    const snap = await query.get();
+    let users = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (search) {
+      const s = search.toLowerCase();
+      users = users.filter(
+        (u) => u.name?.toLowerCase().includes(s) || u.email?.toLowerCase().includes(s)
+      );
+    }
+    const total = users.length;
+    const start = (page - 1) * limit;
+    return { users: users.slice(start, start + limit), total };
+  },
 };
 
-userSchema.index({ email: 1 });
-userSchema.index({ role: 1 });
-
-module.exports = mongoose.model('User', userSchema);
+module.exports = UserModel;

@@ -13,13 +13,16 @@ const protect = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = await User.findById(decoded.id).select('-password');
-    if (!req.user) {
+    const user = await User.findById(decoded.id);
+    if (!user) {
       return res.status(401).json({ success: false, message: 'User not found' });
     }
-    if (req.user.isBlocked) {
+    if (user.isBlocked) {
       return res.status(403).json({ success: false, message: 'Account has been blocked' });
     }
+    // Expose user without password
+    const { password, ...safeUser } = user;
+    req.user = safeUser;
     next();
   } catch (error) {
     return res.status(401).json({ success: false, message: 'Not authorized, token failed' });
@@ -40,7 +43,11 @@ const optionalAuth = async (req, res, next) => {
     token = req.headers.authorization.split(' ')[1];
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      req.user = await User.findById(decoded.id).select('-password');
+      const user = await User.findById(decoded.id);
+      if (user) {
+        const { password, ...safeUser } = user;
+        req.user = safeUser;
+      }
     } catch {
       req.user = null;
     }

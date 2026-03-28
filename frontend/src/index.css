@@ -40,7 +40,7 @@
     animation: shimmer 1.5s infinite;
   }
   .product-card {
-    @apply card cursor-pointer group;
+    @apply card cursor-pointer;
   }
   .product-card:hover img {
     @apply scale-105;

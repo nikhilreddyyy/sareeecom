@@ -1,36 +1,79 @@
-const mongoose = require('mongoose');
+const { getDb, serverTimestamp } = require('../config/firebase');
 
-const couponSchema = new mongoose.Schema(
-  {
-    code: { type: String, required: true, unique: true, uppercase: true, trim: true },
-    description: { type: String },
-    discountType: { type: String, enum: ['percentage', 'fixed'], required: true },
-    discountValue: { type: Number, required: true, min: 0 },
-    minOrderAmount: { type: Number, default: 0 },
-    maxDiscountAmount: { type: Number },
-    usageLimit: { type: Number, default: null },
-    usedCount: { type: Number, default: 0 },
-    userUsageLimit: { type: Number, default: 1 },
-    usedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-    validFrom: { type: Date, default: Date.now },
-    validUntil: { type: Date, required: true },
-    isActive: { type: Boolean, default: true },
-    applicableCategories: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Category' }],
+const COLLECTION = 'coupons';
+
+const CouponModel = {
+  collection() {
+    return getDb().collection(COLLECTION);
   },
-  { timestamps: true }
-);
 
-couponSchema.methods.isValid = function () {
-  const now = new Date();
-  if (!this.isActive) return { valid: false, message: 'Coupon is inactive' };
-  if (now < this.validFrom) return { valid: false, message: 'Coupon is not yet active' };
-  if (now > this.validUntil) return { valid: false, message: 'Coupon has expired' };
-  if (this.usageLimit && this.usedCount >= this.usageLimit)
-    return { valid: false, message: 'Coupon usage limit reached' };
-  return { valid: true };
+  async findById(id) {
+    const doc = await this.collection().doc(id).get();
+    if (!doc.exists) return null;
+    return { id: doc.id, ...doc.data() };
+  },
+
+  async findByCode(code) {
+    const snap = await this.collection()
+      .where('code', '==', code.toUpperCase().trim())
+      .limit(1)
+      .get();
+    if (snap.empty) return null;
+    const doc = snap.docs[0];
+    return { id: doc.id, ...doc.data() };
+  },
+
+  isValid(coupon) {
+    const now = new Date();
+    const validFrom = coupon.validFrom?.toDate ? coupon.validFrom.toDate() : new Date(coupon.validFrom);
+    const validUntil = coupon.validUntil?.toDate ? coupon.validUntil.toDate() : new Date(coupon.validUntil);
+    if (!coupon.isActive) return { valid: false, message: 'Coupon is inactive' };
+    if (now < validFrom) return { valid: false, message: 'Coupon is not yet active' };
+    if (now > validUntil) return { valid: false, message: 'Coupon has expired' };
+    if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit)
+      return { valid: false, message: 'Coupon usage limit reached' };
+    return { valid: true };
+  },
+
+  async getAll() {
+    const snap = await this.collection().orderBy('createdAt', 'desc').get();
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  },
+
+  async create(data) {
+    const now = serverTimestamp();
+    const couponData = {
+      code: data.code.toUpperCase().trim(),
+      description: data.description || '',
+      discountType: data.discountType,
+      discountValue: data.discountValue,
+      minOrderAmount: data.minOrderAmount || 0,
+      maxDiscountAmount: data.maxDiscountAmount || null,
+      usageLimit: data.usageLimit || null,
+      usedCount: 0,
+      userUsageLimit: data.userUsageLimit || 1,
+      usedBy: [],
+      validFrom: data.validFrom || new Date().toISOString(),
+      validUntil: data.validUntil,
+      isActive: data.isActive !== undefined ? data.isActive : true,
+      applicableCategories: data.applicableCategories || [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    const ref = await this.collection().add(couponData);
+    const created = await ref.get();
+    return { id: created.id, ...created.data() };
+  },
+
+  async update(id, data) {
+    const updateData = { ...data, updatedAt: serverTimestamp() };
+    await this.collection().doc(id).update(updateData);
+    return this.findById(id);
+  },
+
+  async delete(id) {
+    await this.collection().doc(id).delete();
+  },
 };
 
-couponSchema.index({ code: 1 });
-couponSchema.index({ validUntil: 1 });
-
-module.exports = mongoose.model('Coupon', couponSchema);
+module.exports = CouponModel;
