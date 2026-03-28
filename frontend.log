@@ -49,6 +49,7 @@
       at async PluginContainer.transform (file:///home/user/app/frontend/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js:49099:18)
       at async loadAndTransform (file:///home/user/app/frontend/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js:51978:27)
       at async viteTransformMiddleware (file:///home/user/app/frontend/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js:62106:24)
+<<<<<<< Updated upstream
 5:26:38 AM [vite] page reload src/pages/admin/Dashboard.jsx
 5:26:39 AM [vite] Pre-transform error: Failed to resolve import "./pages/admin/ProductForm" from "src/App.jsx". Does the file exist?
 5:26:39 AM [vite] Pre-transform error: [postcss] /home/user/app/frontend/src/index.css:43:5: @apply should not be used with the 'group' utility
@@ -110,5 +111,24 @@ Error: connect ECONNREFUSED 127.0.0.1:5000
 Error: connect ECONNREFUSED 127.0.0.1:5000
     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
 5:42:10 AM [vite] http proxy error: /api/categories
+=======
+5:56:16 AM [vite] page reload src/pages/admin/Dashboard.jsx
+6:15:41 AM [vite] http proxy error: /api/categories
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+6:15:41 AM [vite] http proxy error: /api/categories
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+6:15:41 AM [vite] http proxy error: /api/banners?position=hero
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+6:15:41 AM [vite] http proxy error: /api/products/featured
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+6:15:41 AM [vite] http proxy error: /api/banners?position=hero
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+6:15:42 AM [vite] http proxy error: /api/products/featured
+>>>>>>> Stashed changes
 Error: connect ECONNREFUSED 127.0.0.1:5000
     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
