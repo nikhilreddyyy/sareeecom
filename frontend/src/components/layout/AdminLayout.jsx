@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Package, ShoppingCart, Tag, Ticket, Image,
-  Users, LogOut, Menu, X, ChevronRight, Store
+  Users, LogOut, Menu, X, ChevronRight, Store, ShieldCheck
 } from 'lucide-react';
 import useAuthStore from '../../store/authStore';
 
@@ -14,6 +14,7 @@ const navItems = [
   { path: '/admin/coupons', icon: Ticket, label: 'Coupons' },
   { path: '/admin/banners', icon: Image, label: 'Banners' },
   { path: '/admin/users', icon: Users, label: 'Users' },
+  { path: '/admin/admins', icon: ShieldCheck, label: 'Admin Accounts' },
 ];
 
 export default function AdminLayout() {

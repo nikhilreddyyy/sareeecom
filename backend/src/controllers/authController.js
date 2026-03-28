@@ -2,6 +2,8 @@ const User = require('../models/User');
 const generateToken = require('../utils/generateToken');
 const { AppError } = require('../middleware/errorHandler');
 const { v4: uuidv4 } = require('uuid');
+const bcrypt = require('bcryptjs');
+const { findAdminByEmail } = require('./adminAccountsController');
 
 // @desc    Register user
 // @route   POST /api/auth/register
@@ -29,6 +31,24 @@ exports.register = async (req, res, next) => {
 exports.login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
+
+    // Check admin_accounts collection first
+    let adminAccount = null;
+    try { adminAccount = await findAdminByEmail(email); } catch (_) { /* Firebase not configured */ }
+
+    if (adminAccount) {
+      if (!adminAccount.isActive) return next(new AppError('Admin account is deactivated', 403));
+      const match = await bcrypt.compare(password, adminAccount.password);
+      if (!match) return next(new AppError('Invalid email or password', 401));
+      const token = generateToken(adminAccount.id);
+      return res.json({
+        success: true,
+        token,
+        user: { _id: adminAccount.id, name: adminAccount.name, email: adminAccount.email, role: 'admin', avatar: '' },
+      });
+    }
+
+    // Fall back to regular users collection
     const user = await User.findByEmail(email);
     if (!user || !(await User.matchPassword(password, user.password))) {
       return next(new AppError('Invalid email or password', 401));

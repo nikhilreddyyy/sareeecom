@@ -27,6 +27,7 @@ const AdminCategories = lazy(() => import('./pages/admin/Categories'));
 const AdminCoupons = lazy(() => import('./pages/admin/Coupons'));
 const AdminBanners = lazy(() => import('./pages/admin/Banners'));
 const AdminUsers = lazy(() => import('./pages/admin/Users'));
+const AdminAccounts = lazy(() => import('./pages/admin/AdminAccounts'));
 
 function ProtectedRoute({ children }) {
   const { user } = useAuthStore();
@@ -74,6 +75,7 @@ function App() {
           <Route path="coupons" element={<AdminCoupons />} />
           <Route path="banners" element={<AdminBanners />} />
           <Route path="users" element={<AdminUsers />} />
+          <Route path="admins" element={<AdminAccounts />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" />} />

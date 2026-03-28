@@ -21,6 +21,7 @@ const couponRoutes = require('./routes/coupons');
 const uploadRoutes = require('./routes/upload');
 const bannerRoutes = require('./routes/banners');
 const userRoutes = require('./routes/users');
+const adminAccountRoutes = require('./routes/adminAccounts');
 
 const app = express();
 
@@ -78,6 +79,7 @@ app.use('/api/coupons', couponRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/banners', bannerRoutes);
 app.use('/api/admin/users', userRoutes);
+app.use('/api/admin/accounts', adminAccountRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
